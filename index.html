@@ -1,0 +1,1086 @@
+```react
+import React from 'react';
+
+const { useState, useEffect, useRef } = React;
+
+// 테마 변수 구성
+const theme = {
+  bg: 'bg-slate-950',
+  card: 'bg-slate-900/95 border border-slate-850 rounded-lg p-2 transition-all duration-150',
+  textPrimary: 'text-slate-100',
+  textSecondary: 'text-slate-400',
+  accentCore: '#10B981',      // 코어 (Emerald)
+  accentLeader: '#3B82F6',    // 주도주 (Blue)
+  accentWildcard: '#8B5CF6',  // 와일드카드 (Purple)
+  accentCommodity: '#F59E0B', // 대안 자산/원자재 (Amber)
+  accentCash: '#EC4899',      // 현금 (Pink)
+};
+
+// 표준 섹터 정의 목록
+const SECTORS = {
+  SEMICONDUCTOR: { name: '반도체', color: 'text-sky-400 bg-sky-950/40 border-sky-900/30' },
+  AI_TECH: { name: 'AI/테크', color: 'text-violet-400 bg-violet-950/40 border-violet-900/30' },
+  INDEX: { name: '지수추종', color: 'text-emerald-400 bg-emerald-950/40 border-emerald-900/30' },
+  BATTERY_GREEN: { name: '이차전지', color: 'text-teal-400 bg-teal-950/40 border-teal-900/30' },
+  BIO_HEALTH: { name: '바이오', color: 'text-rose-400 bg-rose-950/40 border-rose-900/30' },
+  COMMODITY: { name: '원자재', color: 'text-amber-400 bg-amber-950/40 border-amber-900/30' },
+  CASH: { name: '현금성', color: 'text-pink-400 bg-pink-950/40 border-pink-900/30' },
+  ETC: { name: '기타', color: 'text-slate-400 bg-slate-950/40 border-slate-900/30' }
+};
+
+export default function App() {
+  const [customApiKey, setCustomApiKey] = useState('');
+  
+  // 코어 + 주도주 + 와일드카드 + 대안자산 = 100% (현금은 자유 보유이므로 목표 비중 계산에서 안전 마진으로 제외)
+  const [targets, setTargets] = useState({
+    CORE: 50,
+    LEADER: 30,
+    WILDCARD: 10,
+    COMMODITY: 10,
+  });
+
+  // 섹터(sector) 및 국가분류(assetType)가 정형화된 초기 자산 목록
+  const [holdings, setHoldings] = useState([
+    { id: '1', stockName: 'TIGER 미국S&P500', amount: 5000000, quantity: 125, assetType: 'DOMESTIC_STOCK', category: 'CORE', sector: 'INDEX' },
+    { id: '2', stockName: '애플 (AAPL)', amount: 3000000, quantity: 10, assetType: 'FOREIGN_STOCK', category: 'LEADER', sector: 'AI_TECH' },
+    { id: '3', stockName: '테슬라 (TSLA)', amount: 1000000, quantity: 4, assetType: 'FOREIGN_STOCK', category: 'WILDCARD', sector: 'BATTERY_GREEN' },
+    { id: '4', stockName: '금 현물 ETF', amount: 1000000, quantity: 15, assetType: 'DOMESTIC_STOCK', category: 'COMMODITY', sector: 'COMMODITY' },
+    { id: '5', stockName: '원화 예수금', amount: 1500000, quantity: 1, assetType: 'KRW_CASH', category: 'CASH', sector: 'CASH' },
+    { id: '6', stockName: '외화 예수금', amount: 500000, quantity: 1, assetType: 'FOREIGN_CASH', category: 'CASH', sector: 'CASH' },
+  ]);
+
+  const [newStock, setNewStock] = useState({
+    stockName: '',
+    amount: '',
+    quantity: '',
+    assetType: 'DOMESTIC_STOCK',
+    category: 'CORE',
+    sector: 'INDEX'
+  });
+  const [newCash, setNewCash] = useState('2000000'); 
+  const [isOcrLoading, setIsOcrLoading] = useState(false);
+  const [ocrLog, setOcrLog] = useState('');
+  const [toastMessage, setToastMessage] = useState(null);
+  
+  // AI 대화창 관련 상태
+  const [chatMessages, setChatMessages] = useState([
+    {
+      role: 'assistant',
+      content: '안녕하세요! 포트폴리오 자문 AI 비서입니다. 분석하고 싶은 포트폴리오 전략을 질문하거나 아래의 신속 진단 버튼을 활용해 보세요.',
+      sources: []
+    }
+  ]);
+  const [userInput, setUserInput] = useState('');
+  const [isChatLoading, setIsChatLoading] = useState(false);
+  const chatEndRef = useRef(null);
+
+  const showToast = (text, type = 'success') => {
+    setToastMessage({ text, type });
+    setTimeout(() => setToastMessage(null), 3000);
+  };
+
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [chatMessages, isChatLoading]);
+
+  const handleTargetChange = (category, value) => {
+    const val = Math.max(0, Math.min(100, parseInt(value) || 0));
+    const currentVal = targets[category];
+    const diff = val - currentVal;
+    
+    const otherCategories = Object.keys(targets).filter(k => k !== category);
+    const sumOthers = otherCategories.reduce((acc, k) => acc + targets[k], 0);
+
+    let newTargets = { ...targets, [category]: val };
+    
+    if (sumOthers > 0) {
+      otherCategories.forEach(k => {
+        const proportion = targets[k] / sumOthers;
+        const adjustedVal = Math.max(0, Math.round(targets[k] - diff * proportion));
+        newTargets[k] = adjustedVal;
+      });
+    } else {
+      const share = Math.round(diff / 3);
+      otherCategories.forEach(k => {
+        newTargets[k] = Math.max(0, targets[k] - share);
+      });
+    }
+
+    const totalSum = Object.values(newTargets).reduce((a, b) => a + b, 0);
+    if (totalSum !== 100) {
+      const adjustment = 100 - totalSum;
+      newTargets[otherCategories[0]] = Math.max(0, newTargets[otherCategories[0]] + adjustment);
+    }
+
+    setTargets(newTargets);
+  };
+
+  const handleScreenshotUpload = async (event) => {
+    const files = Array.from(event.target.files || []);
+    if (files.length === 0) return;
+
+    setIsOcrLoading(true);
+    setOcrLog(`분석 준비 중...`);
+
+    const apiKey = customApiKey || "";
+    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${apiKey}`;
+
+    // 이미지 분석용 System Prompt 고도화 (국가/섹터 자동매핑 가이드 추가)
+    const systemPrompt = `
+      증권사 잔고 스크린샷 이미지에서 자산 정보를 분석하여 정확한 JSON 배열을 출력하십시오.
+      반드시 마크다운 코드블록 따옴표 없이 순수한 JSON 배열만 응답해야 합니다.
+      
+      [자산 종류(assetType) 분류 규칙]:
+      - DOMESTIC_STOCK: 한국 시장 상장 개별주 및 ETF
+      - FOREIGN_STOCK: 미국 등 해외 시장 상장 개별주 및 해외 ETF
+      - KRW_CASH: 원화 예수금 또는 원화 현금 자산
+      - FOREIGN_CASH: 외화 예수금 또는 달러 등 외화 자산
+
+      [포트폴리오 카테고리(category) 분류 규칙]:
+      - CORE: 지수 추종 인덱스형 자산 (S&P500, 나스닥100, 코스피200 등)
+      - LEADER: 글로벌 탑티어 대형 우량 주도주 (구글, 애플, 엔비디아, 삼성전자 등)
+      - WILDCARD: 고성장 고변동성 자산 (테슬라, 개별 테마주, 암호화폐 등)
+      - COMMODITY: 금, 원유 등 원자재 자산
+      - CASH: 원화/외화 현금 자산
+
+      [섹터(sector) 분류 규칙]:
+      - SEMICONDUCTOR: 반도체 관련 기술 기업 (삼성전자, SK하이닉스, 엔비디아 등)
+      - AI_TECH: 인공지능 및 빅테크 (애플, 구글, 마이크로소프트 등)
+      - INDEX: 지수 추종 ETF 및 인덱스 펀드류
+      - BATTERY_GREEN: 이차전지, 배터리, 친환경 친화 자산
+      - BIO_HEALTH: 제약, 바이오, 헬스케어 관련 자산
+      - COMMODITY: 원자재, 금 현물, 원유 등
+      - CASH: 현금성 자산, 예수금, MMF 등
+      - ETC: 기타 분류되지 않은 섹터 자산
+
+      응답 JSON 구조 스키마 예시:
+      [
+        {"stockName": "SK하이닉스", "amount": 4200000, "quantity": 25, "assetType": "DOMESTIC_STOCK", "category": "LEADER", "sector": "SEMICONDUCTOR"},
+        {"stockName": "원화 예수금", "amount": 1000000, "quantity": 1, "assetType": "KRW_CASH", "category": "CASH", "sector": "CASH"}
+      ]
+    `;
+
+    const parsedResults = [];
+
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      setOcrLog(`[${i + 1}/${files.length}] 이미지 판독 중...`);
+
+      try {
+        const base64Data = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result.split(',')[1]);
+          reader.onerror = (e) => reject(e);
+          reader.readAsDataURL(file);
+        });
+
+        const payload = {
+          contents: [
+            {
+              role: "user",
+              parts: [
+                { text: "이미지 자산 정보 추출" },
+                {
+                  inlineData: {
+                    mimeType: file.type,
+                    data: base64Data
+                  }
+                }
+              ]
+            }
+          ],
+          systemInstruction: { parts: [{ text: systemPrompt }] },
+          generationConfig: {
+            responseMimeType: "application/json",
+            responseSchema: {
+              type: "ARRAY",
+              items: {
+                type: "OBJECT",
+                properties: {
+                  stockName: { type: "STRING" },
+                  amount: { type: "NUMBER" },
+                  quantity: { type: "NUMBER" },
+                  assetType: { type: "STRING", enum: ["DOMESTIC_STOCK", "FOREIGN_STOCK", "KRW_CASH", "FOREIGN_CASH"] },
+                  category: { type: "STRING", enum: ["CORE", "LEADER", "WILDCARD", "COMMODITY", "CASH"] },
+                  sector: { type: "STRING", enum: ["SEMICONDUCTOR", "AI_TECH", "INDEX", "BATTERY_GREEN", "BIO_HEALTH", "COMMODITY", "CASH", "ETC"] }
+                },
+                required: ["stockName", "amount", "assetType", "category", "sector"]
+              }
+            }
+          }
+        };
+
+        const response = await fetch(apiUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const result = await response.json();
+        const text = result.candidates?.[0]?.content?.parts?.[0]?.text;
+
+        if (text) {
+          const parsed = JSON.parse(text);
+          if (Array.isArray(parsed)) parsedResults.push(...parsed);
+        }
+      } catch (err) {
+        console.error(err);
+        showToast(`'${file.name}' 분석 중 오류가 발생했습니다.`, 'error');
+      }
+    }
+
+    if (parsedResults.length > 0) {
+      // 이미지 판독 성공 시 전체 일괄 교체 반영
+      const formatted = parsedResults.map((item, idx) => ({
+        id: 'ocr_' + Date.now() + '_' + idx,
+        stockName: item.stockName,
+        amount: Math.round(item.amount),
+        quantity: parseFloat(item.quantity) || 1,
+        assetType: item.assetType || 'DOMESTIC_STOCK',
+        category: item.category || 'CORE',
+        sector: item.sector || 'ETC'
+      }));
+      setHoldings(formatted);
+      showToast(`전체 자산이 새 캡처 내용으로 갱신되었습니다!`, 'success');
+    } else {
+      showToast('자산 정보를 인식하지 못했습니다.', 'error');
+    }
+    setIsOcrLoading(false);
+    setOcrLog('');
+  };
+
+  // 1. 보유 주식 = 국내 주식 + 해외 주식
+  const domesticStocksTotal = holdings.filter(h => h.assetType === 'DOMESTIC_STOCK' && h.category !== 'CASH').reduce((sum, h) => sum + h.amount, 0);
+  const foreignStocksTotal = holdings.filter(h => h.assetType === 'FOREIGN_STOCK' && h.category !== 'CASH').reduce((sum, h) => sum + h.amount, 0);
+  const totalStocksValue = domesticStocksTotal + foreignStocksTotal;
+
+  // 2. 보유한 현금 = 원화 예수금 + 외화 예수금
+  const krwCashTotal = holdings.filter(h => h.assetType === 'KRW_CASH' || (h.category === 'CASH' && h.assetType !== 'FOREIGN_CASH')).reduce((sum, h) => sum + h.amount, 0);
+  const foreignCashTotal = holdings.filter(h => h.assetType === 'FOREIGN_CASH').reduce((sum, h) => sum + h.amount, 0);
+  const totalCashValue = krwCashTotal + foreignCashTotal;
+
+  // 3. 총 자산 가치 = 보유 주식 + 보유한 현금
+  const totalAssetsValue = totalStocksValue + totalCashValue;
+
+  const getCategoryTotal = (cat) => {
+    return holdings.filter(h => h.category === cat).reduce((sum, h) => sum + h.amount, 0);
+  };
+
+  const categoryMetrics = {
+    CORE: { total: getCategoryTotal('CORE'), color: theme.accentCore, name: '코어 자산' },
+    LEADER: { total: getCategoryTotal('LEADER'), color: theme.accentLeader, name: '우량 주도주' },
+    WILDCARD: { total: getCategoryTotal('WILDCARD'), color: theme.accentWildcard, name: '와일드카드' },
+    COMMODITY: { total: getCategoryTotal('COMMODITY'), color: theme.accentCommodity, name: '대안 자산' },
+  };
+
+  // 주식 비율 정량화
+  Object.keys(categoryMetrics).forEach(cat => {
+    categoryMetrics[cat].percent = totalStocksValue > 0 
+      ? Math.round((categoryMetrics[cat].total / totalStocksValue) * 100) 
+      : 0;
+  });
+
+  // 1. 국가 배분율 연산
+  const countryTotal = domesticStocksTotal + foreignStocksTotal;
+  const domesticPercent = countryTotal > 0 ? Math.round((domesticStocksTotal / countryTotal) * 100) : 0;
+  const foreignPercent = countryTotal > 0 ? Math.round((foreignStocksTotal / countryTotal) * 100) : 0;
+
+  // 2. 섹터별 배분율 연산 (전체 주식 가치 기준)
+  const sectorAllocations = Object.keys(SECTORS).map(key => {
+    const totalInSector = holdings
+      .filter(h => h.sector === key && h.category !== 'CASH')
+      .reduce((sum, h) => sum + h.amount, 0);
+    const pct = totalStocksValue > 0 ? Math.round((totalInSector / totalStocksValue) * 100) : 0;
+    return { key, ...SECTORS[key], total: totalInSector, percent: pct };
+  }).sort((a, b) => b.total - a.total);
+
+  const askAiCoach = async (overridePrompt = '') => {
+    const questionText = overridePrompt || userInput;
+    if (!questionText.trim()) return;
+
+    const newMessages = [...chatMessages, { role: 'user', content: questionText }];
+    setChatMessages(newMessages);
+    setUserInput('');
+    setIsChatLoading(true);
+
+    try {
+      const apiKey = customApiKey || "";
+      const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${apiKey}`;
+
+      const holdingSummary = holdings.map(h => 
+        `- ${h.stockName}: ${h.amount.toLocaleString()}원 (${h.assetType === 'DOMESTIC_STOCK' ? '국내주식' : h.assetType === 'FOREIGN_STOCK' ? '해외주식' : h.assetType === 'KRW_CASH' ? '원화예수금' : '외화예수금'} / 카테고리: ${h.category} / 섹터: ${SECTORS[h.sector]?.name || '기타'})`
+      ).join('\n');
+
+      const systemPrompt = `
+        당신은 프로페셔널한 자산 관리 AI 어드바이저입니다.
+        아래의 포트폴리오 정보를 기반으로, 사용자의 질문에 부합하는 정교하고 실리적인 분산 리스크 관리 및 리밸런싱 조언을 마크다운 스타일로 명확히 작성하세요.
+        답변은 3줄 내외로 짧고 직관적이게 유지해 주세요.
+        
+        [보유 현황]
+        - 총 자산가치: ${totalAssetsValue.toLocaleString()}원
+        - 보유 주식액: ${totalStocksValue.toLocaleString()}원 (국내: ${domesticStocksTotal.toLocaleString()}원 / 해외: ${foreignStocksTotal.toLocaleString()}원)
+        - 보유한 현금: ${totalCashValue.toLocaleString()}원 (원화예수금: ${krwCashTotal.toLocaleString()}원 / 외화예수금: ${foreignCashTotal.toLocaleString()}원)
+        
+        [목표 비중 현황]
+        - 코어: 실제 ${categoryMetrics.CORE.percent}% (목표 ${targets.CORE}%)
+        - 주도주: 실제 ${categoryMetrics.LEADER.percent}% (목표 ${targets.LEADER}%)
+        - 와일드카드: 실제 ${categoryMetrics.WILDCARD.percent}% (목표 ${targets.WILDCARD}%)
+        - 대안자산: 실제 ${categoryMetrics.COMMODITY.percent}% (목표 ${targets.COMMODITY}%)
+        
+        자산 상세:
+        ${holdingSummary}
+        
+        구글 검색 도구를 적극 활용하여 거시경제 시황에 알맞은 안전 투자 가이드를 객관적으로 제안하십시오.
+      `;
+
+      const payload = {
+        contents: [{ parts: [{ text: questionText }] }],
+        tools: [{ "google_search": {} }],
+        systemInstruction: { parts: [{ text: systemPrompt }] }
+      };
+
+      const response = await fetch(apiUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      if (!response.ok) throw new Error('API request failed');
+      const result = await response.json();
+      const text = result.candidates?.[0]?.content?.parts?.[0]?.text;
+
+      if (text) {
+        let sources = [];
+        const metadata = result.candidates[0].groundingMetadata;
+        if (metadata && metadata.groundingAttributions) {
+          sources = metadata.groundingAttributions
+            .map(a => ({ uri: a.web?.uri, title: a.web?.title }))
+            .filter(s => s.uri && s.title);
+        }
+        setChatMessages(prev => [...prev, { role: 'assistant', content: text, sources }]);
+      } else {
+        throw new Error('No text returned');
+      }
+    } catch (error) {
+      console.error(error);
+      setChatMessages(prev => [...prev, { role: 'assistant', content: '통신 상태 혹은 API 키를 확인해 주세요.' }]);
+    } finally {
+      setIsChatLoading(false);
+    }
+  };
+
+  const handleAddStock = (e) => {
+    e.preventDefault();
+    if (!newStock.stockName || !newStock.amount) {
+      showToast('이름과 금액을 입력해주세요.', 'error');
+      return;
+    }
+    const added = {
+      id: 'manual_' + Date.now(),
+      stockName: newStock.stockName,
+      amount: parseInt(newStock.amount) || 0,
+      quantity: parseFloat(newStock.quantity) || 1,
+      assetType: newStock.assetType,
+      category: (newStock.assetType === 'KRW_CASH' || newStock.assetType === 'FOREIGN_CASH') ? 'CASH' : newStock.category,
+      sector: (newStock.assetType === 'KRW_CASH' || newStock.assetType === 'FOREIGN_CASH') ? 'CASH' : newStock.sector
+    };
+    setHoldings([...holdings, added]);
+    setNewStock({ stockName: '', amount: '', quantity: '', assetType: 'DOMESTIC_STOCK', category: 'CORE', sector: 'INDEX' });
+    showToast('자산이 수동 추가되었습니다.', 'success');
+  };
+
+  const handleDeleteStock = (id, name) => {
+    setHoldings(holdings.filter(h => h.id !== id));
+    showToast(`'${name}' 자산이 삭제되었습니다.`, 'info');
+  };
+
+  const handleUpdateStockCategory = (id, newCat) => {
+    setHoldings(holdings.map(h => {
+      if (h.id === id) {
+        let updatedType = h.assetType;
+        let updatedSector = h.sector;
+        if (newCat === 'CASH') {
+          updatedType = h.assetType.includes('FOREIGN') ? 'FOREIGN_CASH' : 'KRW_CASH';
+          updatedSector = 'CASH';
+        } else if (h.category === 'CASH') {
+          updatedType = h.assetType.includes('FOREIGN') ? 'FOREIGN_STOCK' : 'DOMESTIC_STOCK';
+          updatedSector = 'INDEX';
+        }
+        return { ...h, category: newCat, assetType: updatedType, sector: updatedSector };
+      }
+      return h;
+    }));
+    showToast('자산 카테고리가 갱신되었습니다.', 'success');
+  };
+
+  const getCashPlanAllocation = () => {
+    const cash = parseFloat(newCash) || 0;
+    if (cash <= 0) return null;
+
+    const targetTotal = totalStocksValue + cash;
+    let distribution = { CORE: 0, LEADER: 0, WILDCARD: 0, COMMODITY: 0 };
+    
+    const targetAmounts = {
+      CORE: (targets.CORE / 100) * targetTotal,
+      LEADER: (targets.LEADER / 100) * targetTotal,
+      WILDCARD: (targets.WILDCARD / 100) * targetTotal,
+      COMMODITY: (targets.COMMODITY / 100) * targetTotal,
+    };
+
+    const deficits = {};
+    let totalDeficit = 0;
+
+    Object.keys(targetAmounts).forEach(cat => {
+      const deficit = targetAmounts[cat] - categoryMetrics[cat].total;
+      if (deficit > 0) {
+        deficits[cat] = deficit;
+        totalDeficit += deficit;
+      } else {
+        deficits[cat] = 0;
+      }
+    });
+
+    if (totalDeficit > 0) {
+      Object.keys(distribution).forEach(cat => {
+        distribution[cat] = Math.round((deficits[cat] / totalDeficit) * cash);
+      });
+    } else {
+      Object.keys(distribution).forEach(cat => {
+        distribution[cat] = Math.round((targets[cat] / 100) * cash);
+      });
+    }
+
+    return distribution;
+  };
+
+  const cashPlan = getCashPlanAllocation();
+
+  const getProfitTakingRecommendations = () => {
+    const recommendations = [];
+    Object.keys(categoryMetrics).forEach(cat => {
+      const currentPct = categoryMetrics[cat].percent;
+      const targetPct = targets[cat];
+      const excessPct = currentPct - targetPct;
+
+      if (excessPct > 3) {
+        const excessAmount = Math.round((excessPct / 100) * totalStocksValue);
+        const topAsset = holdings
+          .filter(h => h.category === cat)
+          .sort((a, b) => b.amount - a.amount)[0];
+
+        if (topAsset) {
+          recommendations.push({
+            category: cat,
+            catName: categoryMetrics[cat].name,
+            excessAmount,
+            excessPct,
+            leadStockName: topAsset.stockName,
+            color: categoryMetrics[cat].color,
+          });
+        }
+      }
+    });
+    return recommendations;
+  };
+
+  const profitTakingRecommendations = getProfitTakingRecommendations();
+
+  const formatKRW = (num) => {
+    if (num === 0) return '0원';
+    if (num >= 100000000) return `${(num / 100000000).toFixed(1)}억원`;
+    if (num >= 10000) return `${Math.round(num / 10000).toLocaleString()}만원`;
+    return `${num.toLocaleString()}원`;
+  };
+
+  return (
+    <div className={`min-h-screen ${theme.bg} ${theme.textPrimary} pb-6 font-sans antialiased text-[11px] leading-relaxed`}>
+      
+      {/* Dynamic Toast Alerts */}
+      {toastMessage && (
+        <div className="fixed top-2 left-2 right-2 z-50 flex items-center gap-1.5 px-3 py-1.5 rounded border border-slate-700 bg-slate-900/95 backdrop-blur shadow-xl">
+          <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${toastMessage.type === 'success' ? 'bg-emerald-400' : toastMessage.type === 'error' ? 'bg-rose-500' : 'bg-blue-400'}`} />
+          <p className="text-[10px] font-bold text-slate-100 break-keep keep-all">{toastMessage.text}</p>
+        </div>
+      )}
+
+      {/* Header */}
+      <header className="border-b border-slate-900 bg-slate-950/90 sticky top-0 z-40 backdrop-blur-md">
+        <div className="max-w-md mx-auto px-3 py-2 flex items-center justify-between">
+          <div className="flex items-center gap-1.5">
+            <div className="w-5 h-5 bg-gradient-to-tr from-emerald-500 to-blue-500 rounded flex items-center justify-center flex-shrink-0">
+              <svg className="text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24" width="12" height="12">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M11 3.055A9.003 9.003 0 1020.945 13H11V3.055z" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M20.488 9H15V3.512A9.025 9.025 0 0120.488 9z" />
+              </svg>
+            </div>
+            <h1 className="text-xs font-black tracking-tight whitespace-nowrap break-keep">
+              주식 포트폴리오 어드바이저
+            </h1>
+          </div>
+          <input 
+            type="password"
+            value={customApiKey}
+            onChange={(e) => setCustomApiKey(e.target.value)}
+            placeholder="Gemini API Key"
+            className="bg-slate-900 border border-slate-880 text-[9px] text-slate-300 px-1.5 py-0.5 rounded w-20 focus:outline-none focus:border-emerald-500"
+          />
+        </div>
+      </header>
+
+      {/* Main Container */}
+      <main className="max-w-md mx-auto px-2 mt-2 flex flex-col gap-2">
+
+        {/* 1. 3-Way Metrics Dashboard (Mobile Portrait Optimized) */}
+        <div className="grid grid-cols-3 gap-1 text-center">
+          <div className={`${theme.card} p-1.5 bg-slate-900/60`}>
+            <p className="text-[9px] text-slate-500 font-extrabold whitespace-nowrap break-keep keep-all">총 자산 가치</p>
+            <h3 className="text-[10px] font-black text-slate-100 mt-0.5 whitespace-nowrap">{formatKRW(totalAssetsValue)}</h3>
+          </div>
+          <div className={`${theme.card} p-1.5 bg-slate-900/60`}>
+            <p className="text-[9px] text-blue-400 font-extrabold whitespace-nowrap break-keep keep-all">보유 주식</p>
+            <h3 className="text-[10px] font-black text-slate-100 mt-0.5 whitespace-nowrap">{formatKRW(totalStocksValue)}</h3>
+          </div>
+          <div className={`${theme.card} p-1.5 bg-slate-900/60`}>
+            <p className="text-[9px] text-emerald-400 font-extrabold whitespace-nowrap break-keep keep-all">보유한 현금</p>
+            <h3 className="text-[10px] font-black text-emerald-400 mt-0.5 whitespace-nowrap">{formatKRW(totalCashValue)}</h3>
+          </div>
+        </div>
+
+        {/* 2. Visual Proportions Panel */}
+        <div className={`${theme.card}`}>
+          <div className="flex items-center gap-3">
+            {/* Highly Compact Circular SVG */}
+            <div className="relative w-12 h-12 flex-shrink-0">
+              <svg className="w-full h-full transform -rotate-90" viewBox="0 0 42 42">
+                <circle cx="21" cy="21" r="15.915" fill="transparent" stroke="#1e293b" strokeWidth="4.5" />
+                {categoryMetrics.CORE.percent > 0 && (
+                  <circle cx="21" cy="21" r="15.915" fill="transparent" stroke={theme.accentCore} strokeWidth="5" strokeDasharray={`${categoryMetrics.CORE.percent} ${100 - categoryMetrics.CORE.percent}`} strokeDashoffset="0" />
+                )}
+                {categoryMetrics.LEADER.percent > 0 && (
+                  <circle cx="21" cy="21" r="15.915" fill="transparent" stroke={theme.accentLeader} strokeWidth="5" strokeDasharray={`${categoryMetrics.LEADER.percent} ${100 - categoryMetrics.LEADER.percent}`} strokeDashoffset={-categoryMetrics.CORE.percent} />
+                )}
+                {categoryMetrics.WILDCARD.percent > 0 && (
+                  <circle cx="21" cy="21" r="15.915" fill="transparent" stroke={theme.accentWildcard} strokeWidth="5" strokeDasharray={`${categoryMetrics.WILDCARD.percent} ${100 - categoryMetrics.WILDCARD.percent}`} strokeDashoffset={-(categoryMetrics.CORE.percent + categoryMetrics.LEADER.percent)} />
+                )}
+                {categoryMetrics.COMMODITY.percent > 0 && (
+                  <circle cx="21" cy="21" r="15.915" fill="transparent" stroke={theme.accentCommodity} strokeWidth="5" strokeDasharray={`${categoryMetrics.COMMODITY.percent} ${100 - categoryMetrics.COMMODITY.percent}`} strokeDashoffset={-(100 - categoryMetrics.COMMODITY.percent)} />
+                )}
+              </svg>
+            </div>
+
+            {/* Compact Legend Blocks */}
+            <div className="flex-1 grid grid-cols-2 gap-x-2 gap-y-0.5 text-[9px] font-extrabold whitespace-nowrap break-keep keep-all">
+              <div className="flex items-center gap-1">
+                <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: theme.accentCore }} />
+                <span className="text-slate-400">코어: {categoryMetrics.CORE.percent}%</span>
+              </div>
+              <div className="flex items-center gap-1">
+                <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: theme.accentLeader }} />
+                <span className="text-slate-400 font-extrabold">주도주: {categoryMetrics.LEADER.percent}%</span>
+              </div>
+              <div className="flex items-center gap-1">
+                <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: theme.accentWildcard }} />
+                <span className="text-slate-400 font-extrabold">와일드카드: {categoryMetrics.WILDCARD.percent}%</span>
+              </div>
+              <div className="flex items-center gap-1">
+                <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: theme.accentCommodity }} />
+                <span className="text-slate-400">대안자산: {categoryMetrics.COMMODITY.percent}%</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Target Weight vs Actual Weight Bars */}
+          <div className="mt-2 pt-2 border-t border-slate-800 flex flex-col gap-1">
+            {Object.keys(categoryMetrics).map(cat => {
+              const m = categoryMetrics[cat];
+              const target = targets[cat];
+              const current = m.percent;
+              const diff = current - target;
+
+              return (
+                <div key={cat} className="text-[10px] font-bold">
+                  <div className="flex justify-between items-center mb-0.5 whitespace-nowrap break-keep keep-all">
+                    <span className="text-slate-300 flex items-center gap-1">
+                      <span className="w-1 h-1 rounded-full" style={{ backgroundColor: m.color }} />
+                      {m.name}
+                    </span>
+                    <span className="text-slate-400 text-[9px]">
+                      실제 {current}% / 목표 {target}% 
+                      {diff !== 0 && (
+                        <span className={`ml-1 font-extrabold ${diff > 0 ? 'text-rose-400' : 'text-emerald-400'}`}>
+                          ({diff > 0 ? `+${diff}%` : `${diff}%`})
+                        </span>
+                      )}
+                    </span>
+                  </div>
+                  <div className="w-full h-1 bg-slate-800 rounded overflow-hidden relative">
+                    <div className="absolute top-0 bottom-0 w-0.5 bg-slate-400 z-10" style={{ left: `${target}%` }} />
+                    <div className="h-full rounded transition-all duration-300" style={{ width: `${current}%`, backgroundColor: m.color }} />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* 2.5 [신규] 하위 분류 입체 분석 대시보드 (국내/해외 & 섹터 배분 비중) */}
+        <div className={`${theme.card} bg-slate-900/50 border-slate-800`}>
+          <div className="grid grid-cols-2 gap-3">
+            {/* 국가별 분석 배분율 */}
+            <div className="flex flex-col">
+              <h4 className="text-[9px] font-extrabold text-slate-400 mb-1 whitespace-nowrap break-keep keep-all">🌍 시장별 배분</h4>
+              <div className="flex items-center justify-between text-[9px] font-black text-slate-300 mb-1">
+                <span className="text-blue-400 whitespace-nowrap break-keep keep-all">국내: {domesticPercent}%</span>
+                <span className="text-purple-400 whitespace-nowrap break-keep keep-all">해외: {foreignPercent}%</span>
+              </div>
+              <div className="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden flex">
+                <div className="h-full bg-blue-500" style={{ width: `${domesticPercent}%` }} />
+                <div className="h-full bg-purple-500" style={{ width: `${foreignPercent}%` }} />
+              </div>
+            </div>
+
+            {/* 주요 산업 섹터별 점유 현황 (상위 3대 섹터 정렬 표시) */}
+            <div className="flex flex-col">
+              <h4 className="text-[9px] font-extrabold text-slate-400 mb-1 whitespace-nowrap break-keep keep-all">🚀 탑 섹터 점유</h4>
+              <div className="flex flex-col gap-0.5">
+                {sectorAllocations.slice(0, 3).map((sec, idx) => (
+                  <div key={idx} className="flex justify-between items-center text-[9px] text-slate-350">
+                    <span className="truncate max-w-[55px] font-extrabold whitespace-nowrap break-keep keep-all">
+                      {sec.name}
+                    </span>
+                    <div className="flex items-center gap-1.5 flex-1 justify-end">
+                      <div className="w-8 h-1 bg-slate-800 rounded-full overflow-hidden">
+                        <div className="h-full bg-slate-400" style={{ width: `${sec.percent}%` }} />
+                      </div>
+                      <span className="font-black text-slate-200 text-[8px] w-5 text-right">{sec.percent}%</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* 3. Sliding Target Adjusters */}
+        <div className={`${theme.card}`}>
+          <h3 className="text-[9px] font-extrabold text-slate-400 uppercase mb-1 whitespace-nowrap break-keep keep-all">목표 투자 비중 설정 (합계 100%)</h3>
+          <div className="flex flex-col gap-1">
+            {Object.keys(targets).map(cat => (
+              <div key={cat} className="flex items-center justify-between gap-2">
+                <span className="text-[9px] text-slate-300 font-extrabold w-16 whitespace-nowrap break-keep keep-all">
+                  {cat === 'CORE' ? '코어 자산' : cat === 'LEADER' ? '우량 주도주' : cat === 'WILDCARD' ? '와일드카드' : '대안 자산'}
+                </span>
+                <input 
+                  type="range" 
+                  min="0" 
+                  max="100" 
+                  value={targets[cat]}
+                  onChange={(e) => handleTargetChange(cat, e.target.value)}
+                  className="flex-1 accent-emerald-500 bg-slate-800 h-1 rounded cursor-pointer"
+                />
+                <span className="text-[9px] font-black text-slate-200 w-6 text-right whitespace-nowrap">{targets[cat]}%</span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* 4. Real AI Coach Panel (Search Grounding Enabled) */}
+        <div className={`${theme.card} border-emerald-500/25`}>
+          <div className="flex items-center justify-between pb-1 border-b border-slate-800 mb-1.5">
+            <h3 className="text-[9px] font-extrabold text-slate-200 flex items-center gap-1 whitespace-nowrap break-keep keep-all">
+              <span className="relative flex h-1.5 w-1.5">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-emerald-500"></span>
+              </span>
+              AI 포트폴리오 코치
+            </h3>
+            <span className="text-[8px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-1 py-0.5 rounded font-black whitespace-nowrap break-keep keep-all">구글 검색 탑재</span>
+          </div>
+
+          {/* Quick Macro Questions */}
+          <div className="flex flex-wrap gap-1 mb-1.5">
+            <button 
+              onClick={() => askAiCoach('🚨 경기 침체 가능성 및 기준 금리 변화 수혜를 감안한 내 최적의 자산 배분 비중 분석을 진행해 줘.')}
+              className="text-[9px] bg-slate-950 border border-slate-800 hover:border-emerald-500 text-slate-300 px-1.5 py-0.5 rounded font-bold whitespace-nowrap break-keep keep-all"
+              disabled={isChatLoading}
+            >
+              💼 거시 경제 대응 전략
+            </button>
+            <button 
+              onClick={() => askAiCoach('🔍 현재 목표치에서 가장 비중 이탈이 크게 일어난 카테고리를 기준으로, 구체적인 매매 교정 가이드를 작성해 줘.')}
+              className="text-[9px] bg-slate-950 border border-slate-800 hover:border-emerald-500 text-slate-300 px-1.5 py-0.5 rounded font-bold whitespace-nowrap break-keep keep-all"
+              disabled={isChatLoading}
+            >
+              ⚠️ 자산 불균형 리스크 체크
+            </button>
+          </div>
+
+          {/* Chat Window */}
+          <div className="bg-slate-950 rounded p-1.5 border border-slate-850 h-24 overflow-y-auto mb-1.5 flex flex-col gap-1">
+            {chatMessages.map((msg, i) => (
+              <div key={i} className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
+                <div className={`p-1.5 rounded max-w-[95%] text-[9px] leading-relaxed break-keep keep-all ${msg.role === 'user' ? 'bg-emerald-600 text-white' : 'bg-slate-900 text-slate-200'}`}>
+                  <p className="whitespace-pre-line font-medium">{msg.content}</p>
+                  
+                  {msg.sources && msg.sources.length > 0 && (
+                    <div className="mt-1 pt-1 border-t border-slate-800">
+                      <span className="text-[8px] font-black text-slate-500 block mb-0.5">실시간 분석 참조 출처:</span>
+                      <div className="flex flex-col gap-0.5">
+                        {msg.sources.slice(0, 1).map((src, idx) => (
+                          <a key={idx} href={src.uri} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline text-[8px] truncate block max-w-full">
+                            🔗 {src.title}
+                          </a>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            ))}
+            {isChatLoading && (
+              <div className="flex items-center gap-1 text-slate-400 p-1">
+                <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-bounce" />
+                <p className="text-[9px] italic whitespace-nowrap break-keep keep-all">최신 금융 뉴스를 기반으로 진단 보고서 작성 중...</p>
+              </div>
+            )}
+            <div ref={chatEndRef} />
+          </div>
+
+          {/* Chat Field */}
+          <div className="flex gap-1">
+            <input 
+              type="text"
+              value={userInput}
+              onChange={(e) => setUserInput(e.target.value)}
+              placeholder="포트폴리오 리밸런싱 질문을 입력하세요..."
+              className="flex-1 bg-slate-950 border border-slate-850 text-[9px] px-1.5 py-1 rounded focus:outline-none focus:border-emerald-500 text-slate-200"
+              onKeyDown={(e) => { if(e.key === 'Enter') askAiCoach(); }}
+              disabled={isChatLoading}
+            />
+            <button 
+              onClick={() => askAiCoach()}
+              className="bg-emerald-600 hover:bg-emerald-500 px-2 rounded font-black text-white text-[9px] whitespace-nowrap"
+              disabled={isChatLoading}
+            >
+              질문
+            </button>
+          </div>
+        </div>
+
+        {/* 5. Minimal Horizontal Screenshot Analyzer (Bug-Free Fixed SVG Width) */}
+        <div className={`${theme.card} border-slate-800`}>
+          <div className="flex justify-between items-center mb-1">
+            <h3 className="text-[10px] font-extrabold text-slate-200 flex items-center gap-1 whitespace-nowrap break-keep keep-all">
+              <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="14" height="14" className="text-blue-400 flex-shrink-0">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
+              </svg>
+              계좌 캡처 이미지 판독 (업로드 시 전체 일괄 교체)
+            </h3>
+            <span className="text-[8px] bg-blue-500/10 text-blue-400 border border-blue-500/20 px-1 rounded font-black whitespace-nowrap break-keep keep-all">다중 선택</span>
+          </div>
+
+          <label className="flex items-center justify-center gap-1.5 bg-slate-950 border border-slate-850 hover:bg-slate-900 rounded py-1 px-2 cursor-pointer transition-all h-8 text-center w-full">
+            <input type="file" accept="image/*" multiple onChange={handleScreenshotUpload} className="hidden" disabled={isOcrLoading} />
+            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="12" height="12" className="text-slate-450 flex-shrink-0">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+            </svg>
+            <span className="text-[10px] font-extrabold text-slate-350 whitespace-nowrap break-keep keep-all">잔고 캡처 파일 열기</span>
+          </label>
+
+          {isOcrLoading && (
+            <div className="mt-1 p-1 rounded bg-slate-950 border border-slate-800 text-center flex items-center justify-center gap-1.5">
+              <div className="w-2.5 h-2.5 border-2 border-emerald-400 border-t-transparent rounded-full animate-spin" />
+              <p className="text-[9px] text-slate-300 italic whitespace-nowrap break-keep keep-all">{ocrLog}</p>
+            </div>
+          )}
+        </div>
+
+        {/* 6. Systematic Rebalancing Solution */}
+        <div className={`${theme.card}`}>
+          <div className="flex justify-between items-center pb-1 border-b border-slate-800 mb-1.5">
+            <h3 className="text-[9px] font-extrabold text-slate-200 flex items-center gap-1 whitespace-nowrap break-keep keep-all">
+              <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="14" height="14" className="text-emerald-400 flex-shrink-0">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z" />
+              </svg>
+              현명한 리밸런싱 설계 솔루션
+            </h3>
+            <div className="flex items-center gap-1 bg-slate-950 px-1 py-0.5 rounded border border-slate-850">
+              <input 
+                type="number" 
+                value={newCash} 
+                onChange={(e) => setNewCash(e.target.value)} 
+                className="bg-transparent text-emerald-400 font-extrabold text-[9px] focus:outline-none w-14 text-right"
+              />
+              <span className="text-[8px] text-slate-500 font-bold whitespace-nowrap">원</span>
+              {totalCashValue > 0 && (
+                <button 
+                  onClick={() => setNewCash(totalCashValue.toString())} 
+                  className="text-[8px] bg-emerald-500/20 text-emerald-400 px-1 rounded ml-0.5 font-bold whitespace-nowrap break-keep keep-all"
+                >
+                  현금가져오기
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-1.5">
+            {/* New Capital Purchases Allocation */}
+            <div className="bg-slate-950 p-2 rounded border border-slate-850">
+              <h4 className="text-[8px] font-extrabold text-slate-500 uppercase tracking-wide mb-1 flex items-center gap-1 whitespace-nowrap break-keep keep-all">
+                <span className="w-1 h-1 rounded-full bg-emerald-500" />
+                신규 자금 매수 추천 설계 (수입 기반 리밸런싱)
+              </h4>
+              <div className="flex flex-col gap-1 text-[9px] font-extrabold text-slate-300">
+                {cashPlan ? (
+                  Object.keys(cashPlan).map(cat => {
+                    const amt = cashPlan[cat];
+                    if (amt <= 0) return null;
+                    return (
+                      <div key={cat} className="flex justify-between py-0.5 border-b border-slate-900 last:border-0 whitespace-nowrap">
+                        <span className="flex items-center gap-1 text-slate-450 break-keep keep-all">
+                          <span className="w-1 h-1 rounded-full" style={{ backgroundColor: categoryMetrics[cat].color }} />
+                          {cat === 'CORE' ? '코어 자산' : cat === 'LEADER' ? '우량 주도주' : cat === 'WILDCARD' ? '와일드카드' : '대안 자산'}
+                        </span>
+                        <span className="text-emerald-400 font-extrabold">+{formatKRW(amt)} 매수 권장</span>
+                      </div>
+                    );
+                  })
+                ) : (
+                  <p className="text-[9px] text-slate-500 italic break-keep keep-all">신규 투자 가용 예산을 설정해 주시면 가이드를 바로 작성해 드립니다.</p>
+                )}
+              </div>
+            </div>
+
+            {/* Excess/Overheated Allocation Profit Taking Alert */}
+            <div className="bg-slate-950 p-2 rounded border border-slate-850">
+              <h4 className="text-[8px] font-extrabold text-slate-500 uppercase tracking-wide mb-1 flex items-center gap-1 whitespace-nowrap break-keep keep-all">
+                <span className="w-1 h-1 rounded-full bg-blue-500" />
+                목표 범위 초과 자산 (부분 수익실현 추천)
+              </h4>
+              {profitTakingRecommendations.length > 0 ? (
+                <div className="flex flex-col gap-1">
+                  {profitTakingRecommendations.map(rec => (
+                    <div key={rec.category} className="text-[9px] font-bold text-slate-300">
+                      <div className="flex justify-between text-rose-400 font-extrabold whitespace-nowrap">
+                        <span className="break-keep keep-all">{rec.catName} 비중 과열 (+{rec.excessPct}%)</span>
+                        <span>{formatKRW(rec.excessAmount)} 부분 매도</span>
+                      </div>
+                      <p className="text-slate-400 mt-0.5 text-[8px] break-keep keep-all">
+                        보유량이 큰 <strong className="text-white">'{rec.leadStockName}'</strong>을 일부 실현하여 비교적 과소 배분된 <strong className="text-emerald-400">코어 자산</strong>으로 분산 투자하는 것이 좋습니다.
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-[9px] text-emerald-400 font-bold text-center py-0.5 break-keep keep-all">
+                  모든 보유 자산 카테고리가 이상적으로 목표 배분 범위를 준수하고 있습니다.
+                </p>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* 7. Structured Assets Directory (Dual Sub-category System: AssetType & Sector) */}
+        <div className={`${theme.card}`}>
+          <div className="flex justify-between items-center mb-1">
+            <h3 className="text-[9px] font-extrabold text-slate-200 uppercase whitespace-nowrap break-keep keep-all">
+              보유 자산 관리 목록 ({holdings.length})
+            </h3>
+            <button onClick={() => setHoldings([])} className="text-[9px] text-rose-400 hover:text-rose-300 font-bold whitespace-nowrap break-keep keep-all">
+              전체 삭제
+            </button>
+          </div>
+
+          <div className="flex flex-col gap-1 mb-2">
+            {holdings.length > 0 ? (
+              holdings.map((h) => {
+                const share = h.category === 'CASH' 
+                  ? (totalAssetsValue > 0 ? Math.round((h.amount / totalAssetsValue) * 100) : 0)
+                  : (totalStocksValue > 0 ? Math.round((h.amount / totalStocksValue) * 100) : 0);
+
+                return (
+                  <div key={h.id} className="p-1.5 rounded bg-slate-950 border border-slate-850 flex items-center justify-between gap-2">
+                    <div className="min-w-0 flex-1">
+                      {/* Stock Name & Quantity */}
+                      <div className="flex items-center gap-1.5 mb-0.5">
+                        <h4 className="text-[10px] font-black text-slate-100 truncate">{h.stockName}</h4>
+                        <span className="text-[8px] text-slate-500 font-extrabold whitespace-nowrap">{h.quantity.toLocaleString()}주</span>
+                      </div>
+                      
+                      {/* Mini Inline Controls (State/Sector/Type Mapping) */}
+                      <div className="flex flex-wrap items-center gap-1 text-[8px] text-slate-400 whitespace-nowrap break-keep keep-all">
+                        
+                        {/* Domestic vs Foreign selector badge */}
+                        <select 
+                          value={h.assetType} 
+                          onChange={(e) => {
+                            const newType = e.target.value;
+                            setHoldings(holdings.map(item => {
+                              if (item.id === h.id) {
+                                let newCat = item.category;
+                                let newSector = item.sector;
+                                if (newType === 'KRW_CASH' || newType === 'FOREIGN_CASH') {
+                                  newCat = 'CASH';
+                                  newSector = 'CASH';
+                                } else if (item.category === 'CASH') {
+                                  newCat = 'CORE';
+                                  newSector = 'INDEX';
+                                }
+                                return { ...item, assetType: newType, category: newCat, sector: newSector };
+                              }
+                              return item;
+                            }));
+                          }}
+                          className="bg-slate-900 text-slate-300 font-extrabold px-1 py-0.5 rounded border border-slate-800 focus:outline-none"
+                        >
+                          <option value="DOMESTIC_STOCK">국내주식</option>
+                          <option value="FOREIGN_STOCK">해외주식</option>
+                          <option value="KRW_CASH">원화예수금</option>
+                          <option value="FOREIGN_CASH">외화예수금</option>
+                        </select>
+
+                        <span className="text-slate-700 font-bold">|</span>
+
+                        {/* SECTOR dropdown selector */}
+                        <select 
+                          value={h.sector}
+                          disabled={h.assetType === 'KRW_CASH' || h.assetType === 'FOREIGN_CASH'}
+                          onChange={(e) => {
+                            const newSec = e.target.value;
+                            setHoldings(holdings.map(item => 
+                              item.id === h.id ? { ...item, sector: newSec } : item
+                            ));
+                            showToast('섹터가 업데이트되었습니다.', 'success');
+                          }}
+                          className={`font-black px-1 py-0.5 rounded border border-slate-800 focus:outline-none disabled:opacity-50 ${SECTORS[h.sector]?.color || 'bg-slate-900 text-slate-300'}`}
+                        >
+                          {Object.keys(SECTORS).map(key => (
+                            <option key={key} value={key} className="bg-slate-950 text-slate-200">
+                              {SECTORS[key].name}
+                            </option>
+                          ))}
+                        </select>
+
+                        <span className="text-slate-700 font-bold">|</span>
+
+                        {/* Category Classification dropdown selector */}
+                        <select 
+                          value={h.category} 
+                          disabled={h.assetType === 'KRW_CASH' || h.assetType === 'FOREIGN_CASH'}
+                          onChange={(e) => handleUpdateStockCategory(h.id, e.target.value)}
+                          className="bg-slate-900 font-extrabold px-1 py-0.5 rounded border border-slate-800 focus:outline-none disabled:opacity-50"
+                          style={{ color: h.category === 'CASH' ? theme.accentCash : categoryMetrics[h.category]?.color }}
+                        >
+                          <option value="CORE">코어</option>
+                          <option value="LEADER">주도주</option>
+                          <option value="WILDCARD">와일드카드</option>
+                          <option value="COMMODITY">대안자산</option>
+                          <option value="CASH">현금</option>
+                        </select>
+
+                        <span className="text-slate-700 font-bold">|</span>
+                        <span className="text-slate-400 font-extrabold whitespace-nowrap">비중 {share}%</span>
+                      </div>
+                    </div>
+
+                    {/* Numeric Value & Delete button */}
+                    <div className="text-right flex items-center gap-1 flex-shrink-0">
+                      <span className="text-[9px] font-black text-slate-100 whitespace-nowrap">{formatKRW(h.amount)}</span>
+                      <button onClick={() => handleDeleteStock(h.id, h.stockName)} className="p-0.5 text-slate-650 hover:text-rose-450 transition-colors flex-shrink-0">
+                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="12" height="12">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                        </svg>
+                      </button>
+                    </div>
+                  </div>
+                );
+              })
+            ) : (
+              <p className="text-[9px] text-slate-500 italic text-center py-2 break-keep keep-all">상단의 판독 단추로 전체 계좌를 일괄 등록하거나 수동 폼을 이용해 보세요.</p>
+            )}
+          </div>
+
+          {/* Inline Asset Entry Form */}
+          <form onSubmit={handleAddStock} className="p-1.5 bg-slate-950 rounded border border-slate-850 flex flex-col gap-1.5">
+            <div className="grid grid-cols-2 gap-1.5">
+              <input 
+                type="text" 
+                value={newStock.stockName} 
+                onChange={(e) => setNewStock({ ...newStock, stockName: e.target.value })}
+                placeholder="종목명" 
+                className="w-full bg-slate-900 border border-slate-850 text-[9px] px-1.5 py-0.5 rounded focus:outline-none text-slate-200"
+              />
+              <input 
+                type="number" 
+                value={newStock.amount} 
+                onChange={(e) => setNewStock({ ...newStock, amount: e.target.value })}
+                placeholder="금액 (원)" 
+                className="w-full bg-slate-900 border border-slate-850 text-[9px] px-1.5 py-0.5 rounded focus:outline-none text-slate-200"
+              />
+            </div>
+            <div className="grid grid-cols-4 gap-1">
+              <input 
+                type="number" 
+                value={newStock.quantity} 
+                onChange={(e) => setNewStock({ ...newStock, quantity: e.target.value })}
+                placeholder="수량" 
+                className="w-full bg-slate-900 border border-slate-850 text-[9px] px-1 py-0.5 rounded focus:outline-none text-slate-200"
+              />
+              <select 
+                value={newStock.assetType} 
+                onChange={(e) => {
+                  const type = e.target.value;
+                  setNewStock({
+                    ...newStock,
+                    assetType: type,
+                    category: (type === 'KRW_CASH' || type === 'FOREIGN_CASH') ? 'CASH' : newStock.category,
+                    sector: (type === 'KRW_CASH' || type === 'FOREIGN_CASH') ? 'CASH' : newStock.sector
+                  });
+                }}
+                className="w-full bg-slate-900 border border-slate-850 text-[8px] px-1 rounded focus:outline-none text-slate-300 font-bold"
+              >
+                <option value="DOMESTIC_STOCK">국내주식</option>
+                <option value="FOREIGN_STOCK">해외주식</option>
+                <option value="KRW_CASH">원화예수금</option>
+                <option value="FOREIGN_CASH">외화예수금</option>
+              </select>
+              <select 
+                value={newStock.category} 
+                disabled={newStock.assetType === 'KRW_CASH' || newStock.assetType === 'FOREIGN_CASH'}
+                onChange={(e) => setNewStock({ ...newStock, category: e.target.value })}
+                className="w-full bg-slate-900 border border-slate-850 text-[8px] px-1 rounded focus:outline-none text-slate-300 font-bold disabled:opacity-50"
+              >
+                <option value="CORE">코어</option>
+                <option value="LEADER">주도주</option>
+                <option value="WILDCARD">와일드카드</option>
+                <option value="COMMODITY">대안자산</option>
+                <option value="CASH">현금</option>
+              </select>
+              <select 
+                value={newStock.sector} 
+                disabled={newStock.assetType === 'KRW_CASH' || newStock.assetType === 'FOREIGN_CASH'}
+                onChange={(e) => setNewStock({ ...newStock, sector: e.target.value })}
+                className="w-full bg-slate-900 border border-slate-850 text-[8px] px-1 rounded focus:outline-none text-slate-300 font-bold disabled:opacity-50"
+              >
+                {Object.keys(SECTORS).map(key => (
+                  <option key={key} value={key}>{SECTORS[key].name}</option>
+                ))}
+              </select>
+            </div>
+            <button type="submit" className="w-full bg-slate-800 hover:bg-slate-750 text-[9px] font-black text-slate-200 py-1 rounded transition-all whitespace-nowrap">
+              수동 추가 완료
+            </button>
+          </form>
+        </div>
+
+      </main>
+
+      <footer className="max-w-md mx-auto px-3 mt-4 text-center text-[9px] text-slate-650 leading-relaxed font-bold break-keep keep-all">
+        <p>© 2026 주식 포트폴리오 어드바이저</p>
+      </footer>
+    </div>
+  );
+}
+
+```
